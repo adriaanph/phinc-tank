@@ -1,10 +1,17 @@
+""" Some cool interactive graphics for the Mandelbrot & Julia sets.
+    
+    @requires: python3, numpy, matplotlib
+    
+    @author: adriaan, benjamin, arami peens-hough
+"""
 import matplotlib.pyplot as plt
 import matplotlib.animation as anm
 import numpy as np
 
 
 def mandelbrot_orbit(cx,cy, steps=10):
-    """ @return: [z_0, z_1, ... z_N] with each z like (cx, cy) """
+    """ Generates the coordinates for the "orbit" starting from the given initial coordinates.
+        @return: [z_0, z_1, ... z_N] with each z like (cx, cy) """
     f = lambda zx,zy: (zx*zx-zy*zy + cx, 2*zx*zy + cy) # z*z + c
     z = (0, 0)
     o = []
@@ -13,8 +20,11 @@ def mandelbrot_orbit(cx,cy, steps=10):
         o.append(z)
     return o
 
-def mandelbrot_set(cx,cy, max_iterations=200):
-    """ @return: score (same shape as cx & cy), ~0 if it converges to the set, ~1 if it diverges """
+def mandelbrot_set(cx,cy, max_iterations=200, absolute=False):
+    """ Generates the "score" from the Mandelbrot iteration for the given initial coordinates.
+        @param cx,cy: the initial coordinate, may also be arrays for many coordinates.
+        @param absolute: False to map the converging 'absolute' values to the range 0..1.
+        @return: score (same shape as cx & cy), ~0 if it converges to the set, ~1 if it diverges """
     f = lambda zx,zy: (zx*zx-zy*zy + cx, 2*zx*zy + cy) # z*z + c
     z = (0, 0)
     d = np.zeros_like(cx)
@@ -22,10 +32,13 @@ def mandelbrot_set(cx,cy, max_iterations=200):
         z = f(z[0], z[1])
         d[ (z[0]**2 + z[1]**2) < 2*2 ] = tick # If > 4 it is definitely diverging
     d = 1 - d/max_iterations
+    
     return d
 
 def julia_set(zx,zy, cx=0, cy=0, max_iterations=200):
-    """ @return: score (same shape as zx & zy), ~0 if it converges to the set, ~1 if it diverges """
+    """ Generates the "score" from the Julia iteration for the given initial coordinates.
+        @param cx,cy: the initial coordinate, may also be arrays for many coordinates.
+        @return: score (same shape as zx & zy), ~0 if it converges to the set, ~1 if it diverges """
     R = np.sqrt(2 + np.sqrt(cx**2 + cy**2)) # TODO: solve R**2 - R >= sqrt(cx**2+cy**2)
     f = lambda zx,zy: (zx*zx-zy*zy + cx, 2*zx*zy + cy) # z*z + c
     z = (zx, zy)
@@ -123,12 +136,13 @@ def draw_mj(xrange=(-2,2), yrange=(-2,2), points=512, cmap=None, orbit_function=
 
 
 if __name__ == "__main__":
-    if False:
+    if False: # Mandelbrot & Julia from cursor
         draw_mj(xrange=(-3,2), yrange=(-2,2), points=256, cmap='turbo_r')
     
-    elif True:
+    elif True: # Mandelbrot with orbits from cursor
         draw_set(set_function=mandelbrot_set, orbit_function=mandelbrot_orbit, xrange=(-3,1), yrange=(-2,2), cmap='jet')
-        
+    
+    else: # Cycling Julia set
         def funky_julia(step=0):
             steps_per_cycle = 300 # "a" goes through 0..2pi in a cycle; 300+ steps looks smooth-ish
             a = 2*np.pi*step/steps_per_cycle
