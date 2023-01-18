@@ -3,10 +3,11 @@
     @requires: python3, numpy, matplotlib
     @optional-requires: numba
     
-    @author: adriaan, benjamin, arami peens-hough
+    @author: adriaan & arami peens-hough
 """
 import matplotlib.pyplot as plt
 import matplotlib.animation as anm
+from mpl_toolkits import mplot3d
 import numpy as np
 
 
@@ -27,7 +28,7 @@ try: # If 'numba' is available then use it to accelerate the code
     from numba import vectorize
 
     @vectorize(target="cpu")
-    def mandelbrot_set(cx,cy):
+    def mandelbrot_set(cx,cy, return_score):
         """ Generates the "score" from the Mandelbrot iteration for the given initial coordinates.
             @param cx,cy: the initial coordinate.
             @param absolute: False to map the converging 'absolute' values to the range 0..1.
@@ -38,11 +39,13 @@ try: # If 'numba' is available then use it to accelerate the code
             z = f(z[0], z[1])
             if (z[0]**2 + z[1]**2) > 2*2: # If > 4 it is definitely diverging
                 break
-        d = 1 - tick/MAX_ITERATIONS
-        return d
+        if return_score:
+            return 1 - tick/MAX_ITERATIONS
+        else:
+            return (z[0]**2 + z[1]**2)**.5
 
     @vectorize(target="cpu")
-    def julia_set(zx,zy, cx, cy):
+    def julia_set(zx,zy, cx, cy, return_score):
         """ Generates the "score" from the Julia iteration for the given initial coordinates.
             @param cx,cy: the initial coordinate, may also be arrays for many coordinates.
             @return: score (same shape as zx & zy), ~0 if it converges to the set, ~1 if it diverges """
@@ -53,11 +56,14 @@ try: # If 'numba' is available then use it to accelerate the code
             z = f(z[0], z[1])
             if (z[0]**2 + z[1]**2) > R**2:  # If > R*R it is definitely diverging
                 break
-        d = 1 - tick/MAX_ITERATIONS
-        return d
+        if return_score:
+            return 1 - tick/MAX_ITERATIONS
+        else:
+            return (z[0]**2 + z[1]**2)**.5
+    
 except ImportError: # 'numba' not available so use un-accelerated code
     
-    def mandelbrot_set(cx,cy):
+    def mandelbrot_set(cx,cy, return_score):
         """ Generates the "score" from the Mandelbrot iteration for the given initial coordinates.
             @param cx,cy: the initial coordinate, may also be arrays for many coordinates.
             @param absolute: False to map the converging 'absolute' values to the range 0..1.
@@ -68,10 +74,12 @@ except ImportError: # 'numba' not available so use un-accelerated code
         for tick in range(0,MAX_ITERATIONS,1):
             z = f(z[0], z[1])
             d[ (z[0]**2 + z[1]**2) < 2*2 ] = tick # If > 4 it is definitely diverging
-        d = 1 - d/MAX_ITERATIONS
-        return d
+        if return_score:
+            return 1 - d/MAX_ITERATIONS
+        else:
+            return (z[0]**2 + z[1]**2)**.5
 
-    def julia_set(zx,zy, cx,cy):
+    def julia_set(zx,zy, cx,cy, return_score):
         """ Generates the "score" from the Julia iteration for the given initial coordinates.
             @param cx,cy: the initial coordinate, may also be arrays for many coordinates.
             @return: score (same shape as zx & zy), ~0 if it converges to the set, ~1 if it diverges """
@@ -82,8 +90,10 @@ except ImportError: # 'numba' not available so use un-accelerated code
         for tick in range(0,MAX_ITERATIONS,1):
             z = f(z[0], z[1])
             d[ (z[0]**2 + z[1]**2) < R**2 ] = tick # If > R*R it is definitely diverging
-        d = 1 - d/MAX_ITERATIONS
-        return d
+        if return_score:
+            return 1 - d/MAX_ITERATIONS
+        else:
+            return (z[0]**2 + z[1]**2)**.5
 
 
 def draw_set(set_function, set_args=(), xrange=(-2,2), yrange=(-2,2), points=512, cmap=None,
@@ -94,7 +104,7 @@ def draw_set(set_function, set_args=(), xrange=(-2,2), yrange=(-2,2), points=512
     _args = list(set_args() if callable(set_args) else set_args)
     def calc_map(xrange, yrange):
         xx, yy = np.meshgrid(np.linspace(*xrange, points), np.linspace(*yrange, points))
-        return set_function(xx, yy, *_args)
+        return set_function(xx, yy, *_args, True)
     
     fig, axis = plt.subplots(1, 1)
     axis._cmaps = list(plt.colormaps())
@@ -152,7 +162,7 @@ def draw_mj(xrange=(-2,2), yrange=(-2,2), points=512, cmap=None, orbit_function=
         After this you still need plt.show(block=True) to wait until it is destroyed by the user! """
     def calc_map(xrange, yrange, set_function, set_args=()):
         xx, yy = np.meshgrid(np.linspace(*xrange, points), np.linspace(*yrange, points))
-        return set_function(xx, yy, *set_args)
+        return set_function(xx, yy, *set_args, True)
     
     fig, (ax_m, ax_j) = plt.subplots(1, 2)
     score = calc_map(xrange, yrange, mandelbrot_set)
@@ -183,8 +193,34 @@ def draw_mj(xrange=(-2,2), yrange=(-2,2), points=512, cmap=None, orbit_function=
     ax_m.callbacks.connect('ylim_changed', on_zoom) # Zoom first adjusts xlim, then ylim, so only trigger on this event
 
 
+def draw_set3d(set_function, set_args=(), xrange=(-2,2), yrange=(-2,2), points=512, cmap=None):
+    """ Creates an interactive 3D figure.
+        After this you still need plt.show(block=True) to wait until it is destroyed by the user! """
+    _args = list(set_args() if callable(set_args) else set_args)
+    xx, yy = np.meshgrid(np.linspace(*xrange, points), np.linspace(*yrange, points))
+    ticks = set_function(xx, yy, *_args, False)
+    
+    set3d = np.stack([xx, yy, ticks], axis=-1)
+    set3d = set3d[ticks < 1] # Only those 3D points where the iteration converges -- this also "unravels" the 3D matrix
+    x, y, z = set3d[...,0], set3d[...,1], set3d[...,2]
+    
+    fig = plt.figure()
+    axis = mplot3d.Axes3D(fig, auto_add_to_figure=False)
+    axis.figure.add_axes(axis)
+    axis.set_xlabel("x"); axis.set_ylabel("y"); axis.set_zlabel("z")
+    # axis.grid(False)
+    if (cmap is not None):
+        plt.set_cmap(cmap)
+        
+    axis.scatter(x, y, z, c=z, s=1) # size: s=2, colour indices c
+    axis.grid(False)
+
+        
 if __name__ == "__main__":
-    if True: # Mandelbrot & Julia from cursor
+    if True: # 3D!!!
+        draw_set3d(set_function=mandelbrot_set, points=512, cmap='turbo_r')
+    
+    elif True: # Mandelbrot & Julia from cursor
         draw_mj(xrange=(-3,2), yrange=(-2,2), points=512, cmap='turbo_r')
     
     elif True: # Mandelbrot with orbits from cursor
