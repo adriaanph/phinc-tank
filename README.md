@@ -2,6 +2,9 @@
 a space where some phincing gets done!
 
 
+## esp_mojo
+some very basic "breadboard code" for the ESP32 processor.
+
 
 ## face_id
 a simple module that uses the PC webcam and includes both a training and recognition mode.
