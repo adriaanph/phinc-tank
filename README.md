@@ -3,7 +3,7 @@ a space where some phincing gets done!
 
 
 ## esp_mojo
-some very basic "breadboard code" for the ESP32 processor.
+some very basic code to demonstrate the use of the ESP32 processor.
 
 
 ## face_id
