@@ -1,5 +1,13 @@
+""" Very basic face recognition training AND recognition, using your webcam.
+    
+    @requires: python3, numpy, opencv-python, opencv-contrib-python, Pillow
+    
+    
+    @author adriaan, benjamin, arami peens-hough
+    (based on <https://sefiks.com/2020/07/14/a-beginners-guide-to-face-recognition-with-opencv-in-python/>)
+"""
 import cv2
-import os
+import sys, os
 from PIL import Image
 import numpy as np
 
@@ -7,22 +15,23 @@ import numpy as np
 FACE_CLASSIFIER = cv2.CascadeClassifier('haarcascade_frontalface_alt.xml')
 
 
-def show_video(duration_ms, modify_fn=None, close=False):
+def show_video(duration, modify_fn=None, close=False):
     """ Show a screen with video, possibly modified. Press ESCAPE key to stop early.
         
         @param modify_fn: a function like f(image)->image, to modify the image before
                           displaying it (default is None).
+        @param close: True to stop displaying the video when done.
     """
     bob = cv2.VideoCapture(0)
     bob.set(cv2.CAP_PROP_FRAME_WIDTH,640)
     bob.set(cv2.CAP_PROP_FRAME_HEIGHT,480)
     
-    for i in range(0,duration_ms,1):
+    for i in range(0,duration,1):
         ret, frm = bob.read()
         if modify_fn is not None:
             frm = modify_fn(frm)
         cv2.imshow("video",frm)
-        if (cv2.waitKey(1) == 27): # ESCAPE key pressed
+        if (cv2.waitKey(1) == 27): # 1sec or until ESCAPE key pressed
             break
     bob.release()
     if close:
@@ -35,6 +44,7 @@ def mod_bw(image):
  
 
 def mod_extractface(image, name, rootfolder="faces", debug=True):
+    """ Extract a face from an image and save it to `rootfolder` for future training. """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     faces = FACE_CLASSIFIER.detectMultiScale(gray, minNeighbors=4, minSize=(100,100))
     for (x,y,w,h) in faces:
@@ -54,7 +64,7 @@ def make_mod_extractface(name, rootfolder="faces", debug=False): # Factory metho
     return lambda img: mod_extractface(img, name, rootfolder, debug)
 
 def extractfaces(image_fn, names, debug=True):
-    """ Extract faces from an image file, re-using 'mod_extractface()' """
+    """ Extract one or more faces from an image file, re-using 'mod_extractface()' """
     image = cv2.imread(image_fn)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     faces = FACE_CLASSIFIER.detectMultiScale(gray, minNeighbors=10, minSize=(100,100))
@@ -125,5 +135,16 @@ def make_mod_detectface(filter="faces.yml"): # Factory method
 
 
 if __name__ == "__main__":
-    train_faces()
-    show_video(1000, make_mod_detectface(), close=False)
+    rootfolder = os.path.abspath(__file__+"/../faces")
+    if (sys.argv[-1] == "--train"): # Generate a new set of images & re-train
+        if not os.path.exists(rootfolder):
+            os.makedirs(rootfolder)
+        name = input("Name for the new face, or empty for none: ")
+        if (name):
+            print("%s, pose for the camera for ~ 2min, or ESC to cut it short."%name)
+            show_video(2*60, make_mod_extractface(name.strip(), rootfolder), close=True)
+        train_faces(rootfolder)
+    
+    print("Face spotting time for ~10min, or ESC to cut it short.")
+    show_video(10*60, make_mod_detectface(rootfolder+".yml"), close=False)
+    
