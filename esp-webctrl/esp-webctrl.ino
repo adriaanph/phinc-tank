@@ -1,12 +1,16 @@
 /**
  * A very basic ESP8266 WiFi controller with simple web GUI.
+ * Note: Simply delete the "ESP8266" prefixes everywhere below to use e.g. ESP32.
  *
  * adriaan.peenshough@gmail.com
  */
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 
-// Hard-code the WiFi access point name for clients to connect to
+// These details are used first for the ESP to attempt joining an existing WiFi network
+#define JOIN_WIFI_ID "existing_wifi_ssid"
+#define JOIN_WIFI_PSWD "existing_wifi_password"
+// These details are used if the ESP needs to create a stand-alone WiFi access point for clients to connect to
 #define SERVER_ID "esp-control" // WiFi SSID as well as web server name
 #define SERVER_PSWD NULL // No password required to connect!
 #define WIFI_CHANNEL 1 // Static channel, hopefully not congested...
@@ -19,12 +23,43 @@ char cmd; // Command received by input handler in current cycle
 
 void ui_webserver_init() {
   /** Command interface trough WiFi HTTP server */
-  WiFi.softAP(SERVER_ID, SERVER_PSWD, WIFI_CHANNEL);
+  Serial.println();
+
+  // First try to connect to existing WiFi network
+  bool standalone = false;
+  WiFi.begin(JOIN_WIFI_ID, JOIN_WIFI_PSWD);
+  Serial.print("Waiting 5 seconds to join WiFi network ...");
+  WiFi.waitForConnectResult(5000);
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" connected!");
+    standalone = false;
+  } else { // Failed to join
+    Serial.println(" FAILED!");
+    WiFi.disconnect();
+
+    // Create a standalone network
+    Serial.print("Starting a standalone WiFi network ...");
+    if (WiFi.softAP(WIFI_ID, WIFI_PSWD, WIFI_CHANNEL)) {
+      Serial.println(" started!");
+    } else {
+      Serial.print(" FAILED!");
+      Serial.print("FATAL ERRROR: Failed to bring up WiFi interface!");
+      while (true) {} // Hang the processor
+    }
+    standalone = true;
+  }
+
   ui_webserver.on("/", ui_webserver_display);
   ui_webserver.on("/cmd", ui_webserver_cmd);
   ui_webserver.on("/query", ui_webserver_query);
   ui_webserver.begin();
-  Serial.print("Web server started at IP "); Serial.println(WiFi.softAPIP());
+
+  Serial.print("Web server started at IP ");
+  if (standalone) {
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println(WiFi.localIP());
+  }
 }
 
 void ui_webserver_display() {
@@ -98,5 +133,5 @@ void setup() {
 void loop() {
   cmd = 0;
   ui_webserver.handleClient();
-  // Can either act on command in "ui_webserver_cmd" or here
+  // Prefer to only act on commands in "ui_webserver_cmd", not here
 }
