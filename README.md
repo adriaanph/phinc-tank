@@ -2,6 +2,10 @@
 this is a space where some phincing gets done!
 
 
+## IQstudy
+a simulation study to look at distributions of IQ scores in a school that determines class placements on it.
+
+
 ## esp_mojo
 some very basic code to demonstrate the use of the ESP32 processor.
 

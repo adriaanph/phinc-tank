@@ -34,7 +34,7 @@ def study_4F(N_years=30, N_tries=100):
     
     # Functions for making figures and plots
     new_fig = lambda: plt.figure() # Make a new figure
-    plot_hist = lambda IQs, label: (plt.hist(IQs, bins=30, range=(60, 140), density=False, alpha=0.8, label=label), plt.legend())
+    plot_hist = lambda IQs, label: (plt.hist(IQs, bins=30, range=(60, 140), density=False, alpha=0.8, label=label), plt.xlabel("IQ"), plt.legend())
     
     # We'll run the analysis below for a number of years with completely independent random groups
     for year in range(N_years):
@@ -100,7 +100,7 @@ def study_4F(N_years=30, N_tries=100):
     plt.figure()
     plt.hist(np.concatenate(closest_results), bins=30, range=(90, 130), density=True, alpha=0.8, label="Average of Matches")
     plt.hist(jc4F_IQs, bins=30, range=(90, 130), density=True, alpha=0.8, label="Covacich's 4F group")
-    plt.legend()
+    plt.xlabel("IQ"); plt.legend()
 
 
 
