@@ -29,19 +29,19 @@ enum FLY_STATE {HALTED, CAL_CHECK, READY, FLY_STRAIGHT, FLY_LEFT, FLY_RIGHT};
 // Servo set point values are encoded as pulse widths, outside of this range some servos "wrap" or start continuous rotation!
 // FIND YOUR OWN BY TRIAL & ERROR! Arduino defaults to 544 - 2400 microsec (DEFAULT_MIN_PULSE_WIDTH & DEFAULT_MAX_PULSE_WIDTH), ESP8266 to 1000 - 2000 microsec.
 /** For TowerPro SG9 (9gram) 
-#define SERVO_L_MINMICROS 700 // 700 - 2300 ~ 90deg
+#define SERVO_L_MINMICROS 700 // 700 - 2300 ~ 120deg
 #define SERVO_L_MAXMICROS 2300
 #define SERVO_R_MINMICROS 700
 #define SERVO_R_MAXMICROS 2300
-#define WING_RATE_MAX 900 // [percent/sec] typical for 9gr servos @3.7V is 0.15sec/60deg; so 0.15sec/60deg*(90deg/200%) = 0.225sec/200% --> 889%/sec
+#define WING_PERIOD_MIN 225 // [millisec/flap(100% to -100% back to 100%)] typical for 9gr servos @3.7V is 0.15sec/60deg; so 0.15sec/60deg*(90deg/200%) = 0.225sec/200%
 */
 
 /** For AGFRC C02 (2gram) & C037 (3.7gram) */
 #define SERVO_L_MINMICROS 700 // 2gram: 700 - 2300 ~ 150deg
-#define SERVO_L_MAXMICROS 1700
+#define SERVO_L_MAXMICROS 2300
 #define SERVO_R_MINMICROS 700 // 3.7gram: 700 - 2300 ~ 150deg
-#define SERVO_R_MAXMICROS 1700
-#define WING_RATE_MAX 1700 // [percent/sec] typical for 3.7gr servos @3.7V is 0.08sec/60deg; so 0.08sec/60deg*(90deg/200%) = 0.12sec/200% --> 1667%/sec
+#define SERVO_R_MAXMICROS 2300
+#define WING_PERIOD_MIN 120 // [millisec/flap(100% to -100% back to 100%)] typical for 3.7gr servos @3.7V is 0.08sec/60deg; so 0.08sec/60deg*(90deg/200%) = 0.12sec/200%
 
 
 #define WING_L_MICROS(pct) map(pct,-100,100, SERVO_L_MINMICROS,SERVO_L_MAXMICROS) // percentage [-100..100] => servo pulse microsec
@@ -51,33 +51,57 @@ Servo wing_L = Servo();
 Servo wing_R = Servo();
 
 
-void set_servos(int pos_L, int pos_R) {
+void set_servos(int pos_L, int pos_R, int tilt) {
   /** Sets both wing positions to match the requested positions.
    * NB: Automatically attaches servos if necessary.
-   * @param pos_L, pos_R: [+/-percentage].
+   *
+   * @param pos_L, pos_R: positions to go to [+/-percentage].
+   * @param tilt: offset to add to L & subtract from R [+/-percentage]
    */
   if (!wing_L.attached() | !wing_R.attached()) {
     wing_L.attach(SERVO_L_PIN, SERVO_L_MINMICROS, SERVO_L_MAXMICROS);
     wing_R.attach(SERVO_R_PIN, SERVO_R_MINMICROS, SERVO_R_MAXMICROS);
   }
-  wing_L.writeMicroseconds(WING_L_MICROS(pos_L));
-  wing_R.writeMicroseconds(WING_R_MICROS(pos_R));
+  wing_L.writeMicroseconds(WING_L_MICROS(pos_L+tilt));
+  wing_R.writeMicroseconds(WING_R_MICROS(pos_R-tilt));
+}
+
+
+unsigned long T_phase0 = millis(); // The reference value of `millis()` that corresponds to phase = 0
+
+void flap_servos(unsigned int ampl_L, unsigned int ampl_R, int tilt, unsigned int cycle_time) {
+  /** Continuously (adjusted once per `loop()`) cycle the servos down -> up -> down, following a sinusoidal curve
+   * to minimise the "jerkiness".
+   * This uses the global `T_phase0` to keep the motion changing smoothly over time.
+   *
+   * @param ampl_L, ampl_R: amplitudes for the left and right servos [percentage].
+   * @param tilt: offset to add to L & subtract from R [+/-percentage]
+   * @param cycle_time: duration for a complete flapping cycle [millisec]
+   */
+  unsigned long T_now = millis();
+  float phase_frac = (T_now - T_phase0) /(float) cycle_time; // Fraction of cycles that have passed since T_phase0
+  float curve = cos(phase_frac*2*PI);
+  set_servos(curve*ampl_L, curve*ampl_R, tilt);
+
+  if (phase_frac > 1) { // Update T_phase0 to prevent the numbers from becoming unnecesssarily big
+    T_phase0 = T_phase0 + trunc(phase_frac)*cycle_time; // Adding an integer number of full cycles to remain at "phase 0"
+  }
 }
 
 
 /** State Machine ************************************************************/
 /** Current state variables */
 FLY_STATE current_state;
+int wing_tilt; // [percentage] amplitude to tilt the wings (+ & -) to turn
 unsigned int wing_ampl; // [percentage] wing amplitude
-unsigned int wing_rest; // [millisec] to wait after a downward stroke
+unsigned int wing_time; // [millisec] duration of an up/downward stroke
 
-int WING_REST_MIN() { // [millisec] fastest time for a full swing from +wing_ampl to -wing_ampl
-  return (2*wing_ampl*1000) / WING_RATE_MAX;
-}
 
 void set_defaults() {
-  wing_ampl = 100; // Max flapping amplitude
-  wing_rest = WING_REST_MIN(); // Fastest flapping for this amplitude
+  wing_tilt = 0;
+  // These should be in the middle of the range
+  wing_ampl = 50; // 1/2 of max flapping amplitude
+  wing_time = 3 * WING_PERIOD_MIN*(wing_ampl/(float)100); // 1/3rd of fastest flapping rate for chosen amplitude
 }
 
 
@@ -85,45 +109,30 @@ FLY_STATE apply_state(FLY_STATE state, char request) {
   /** Implement the current state & determine which state is next.
    * @return: next state
    */
-  FLY_STATE next_state = HALTED; // This should make state machine errors very obvious
+  FLY_STATE next_state = check_state_transition(state, state, request); // The current state, unless explicitly changed by input
 
-  if (state == HALTED) { // Ensure servos are powered down to minimie risk of damage
+  if (next_state == HALTED) { // Ensure servos are powered down e.g. to minimise risk of damage
     wing_L.detach(); wing_R.detach();
-    next_state = check_state_transition(state, state, request); // Stay in this state unless requested
   }
-  else if (state == CAL_CHECK) { // Allow inspection of ranges & adjustment of servo horns for wings fully UP & fully DOWN
-    set_servos(100, 100);
+  else if (next_state == CAL_CHECK) { // Allow inspection of ranges & adjustment of servo horns for wings fully UP & fully DOWN
+    set_servos(100, 100, 0);
     delay(2*1000); // 2 sec to turn & for inspection
-    set_servos(-100, -100);
-    delay(2*1000); // 2 sec
-    next_state = check_state_transition(state, HALTED, request); // Halt (wings in last position) to make it possible to adjust wings
+    set_servos(-100, -100, 0);
+    delay(1000); // Just enough time to get there before halting (don't block unnecessarily long).
+    next_state =  HALTED; // Halt (wings in last position) to make it possible to adjust wings
   }
-  else if (state == READY) { // Wings in neutral position e.g. when gliding or ready to start flapping
-    set_servos(0, 0);
-    next_state = check_state_transition(state, state, request); // Stay in this state unless requested
+  else if (next_state == READY) { // Wings locked in current neutral position e.g. when gliding forward, left or right
+    set_servos(0, 0, wing_tilt);
   }
-  else { // FLY_...: Wings cycle down -> up - BLOCKING!
-    if (state == FLY_STRAIGHT) { // Wings cycle down -> up
-      set_servos(-wing_ampl, -wing_ampl);
-    }
-    else if (state == FLY_LEFT) { // Left wing only half-way down 
-      set_servos(-wing_ampl/2, -wing_ampl);
-    }
-     else if (state == FLY_RIGHT) { // Right wing only half-way down 
-      set_servos(-wing_ampl, -wing_ampl/2);
-    }
-    delay(wing_rest); // Pause after down stroke
-    set_servos(wing_ampl, wing_ampl);
-    delay(wing_rest); // Pause after up stroke
-    next_state = check_state_transition(state, state, request); // Stay in this state unless requested
+  else { // FLY_...: flap the wings as currently configured
+    flap_servos(wing_ampl, wing_ampl, wing_tilt, wing_time);
   }
-
+  
   return next_state;
 }
 
-
 FLY_STATE check_state_transition(FLY_STATE current_state, FLY_STATE proposed_next, char request) {
-  /** Interpret request (invalid requests are ignored!), potentially changing the next state.
+  /** Interpret request (invalid requests are ignored!), potentially changing the next state & variables.
    * Uses the gamers' keypad AWSD, A|a for left, D|d for right, S|s for straight, space or _ for ready/glide.
    * W|w for faster flapping (& straight) Z|X for slower (& straight), + & - to increase & decrease amplitude.
    * C to reset values & perform a calibration check.
@@ -134,39 +143,38 @@ FLY_STATE check_state_transition(FLY_STATE current_state, FLY_STATE proposed_nex
   FLY_STATE next = proposed_next;
 
   if (request == 'H' | request == 'h') { // Reset to defaults & halt
-    set_defaults();
     next = HALTED;
   }
   else if (request == 'A' | request == 'a') {
     next = FLY_LEFT;
+    wing_tilt = -20; // Left wing lower, right wing higher
   }
   else if (request == 'S' | request == 's') {
     next = FLY_STRAIGHT;
+    wing_tilt = 0;
   }
   else if (request == 'D' | request == 'd') {
     next = FLY_RIGHT;
+    wing_tilt = 20; // Left wing higher, right wing lower
   }
-  else if (request == ' ' | request == '_') { // Wings ready but in neutral position - e.g. for glide
+  else if (request == ' ' | request == '_') { // Wings ready in neutral position - e.g. for glide
     next = READY;
   }
-  else if (request == 'C' | request == 'c') { // Enter into wing position calibration check
+  else if (request == 'C' | request == 'c') { // Set defaults & enter into wing position calibration check
     next = CAL_CHECK;
+    set_defaults();
   }
   else if (request == 'W' | request == 'w') { // Decrease wing rest interval
-    wing_rest = constrain(wing_rest-20, WING_REST_MIN()/2,WING_REST_MIN()*5);
-    next = FLY_STRAIGHT;
+    wing_time = 0.9*wing_time;
   }
   else if (request == 'Z' | request == 'z' | request == 'X' | request == 'x') { // Increase wing rest interval
-    wing_rest = constrain(wing_rest+20, WING_REST_MIN()/2,WING_REST_MIN()*5);
-    next = FLY_STRAIGHT;
+    wing_time = 1.1*(wing_time+5); // +5 to avoid "lock in" when it's zero
   }
   else if (request == '+') { // Increase wing amplitude
-    wing_ampl = constrain(wing_ampl+10, 10,100);
-    wing_rest = WING_REST_MIN(); // Fastest flapping for this amplitude
+    wing_ampl = 1.1*(wing_ampl+5);
   }
   else if (request == '-') { // Decrease wing amplitude
-    wing_ampl = constrain(wing_ampl-10, 10,100);
-    wing_rest = WING_REST_MIN(); // Fastest flapping for this amplitude
+    wing_ampl = 0.9*wing_ampl;
   }
 
   return next;
@@ -199,20 +207,35 @@ void ui_webserver_init() {
   WiFi.softAP(SERVER_ID, NULL, WIFI_CHANNEL); // NULL -> no password to connect by WiFi
   ui_webserver.on("/", ui_webserver_display);
   ui_webserver.on("/cmd", ui_webserver_cmd);
+  ui_webserver.on("/query", ui_webserver_query);
   ui_webserver.begin();
   Serial.print("Web server started at IP "); Serial.println(WiFi.softAPIP());
 }
 
+String EOT = "\r\n\r\n"; // It seems to be required to send this, for ESP to close client connections & avoid choking on connections? (Danois90 on forum.arduino.cc)
+
 void ui_webserver_display() {
   /** Display the instructions & command elements on the interface. */
-  String script = "<script type=\"text/javascript\">function send(cmd) {";
-  // timeout=100millisec is my workaround for bug <https://www.tablix.org/~avian/blog/archives/2022/08/esp8266_web_server_is_slow_to_close_connections> - timouts in browser console are harmless
-  script += "var req = new XMLHttpRequest(); req.open(\"POST\", \"cmd?\"+cmd); req.timeout=100; req.send(null);";
-  script += "}</script>";
+  String script = "<script type=\"text/javascript\">";
+  // timeout=2000millisec because the wing flapping cycles are blocking, slowest probably 0.5flap/sec, and "cal check" blocks for ~ 2sec.
+  // Send a command without bothering with any response.
+  script += "function send(cmd) {";
+  script += "var req = new XMLHttpRequest(); req.open(\"PUT\", \"cmd?\"+cmd); req.timeout=2000; req.send(null);";
+  script += "}";
+  // Queries: there must be an HTML element with ID==query and it must have an explicit 'close' tag!
+  script += "function retrv(query) {";
+  script += "var req = new XMLHttpRequest(); req.onreadystatechange = function() {";
+  script += "  if (this.readyState==4 && this.status==200) { x=document.getElementById(query); if (x!=null) x.innerHTML=this.responseText; }";
+  script += "  }; req.open(\"GET\", \"query?\"+query+\"=1\"); req.timeout=2000; req.send(null);";
+  script += "}";
+  // Queries that are run at regular intervals
+  script += "setInterval(function(){retrv('status');}, 3000);";
+  script += "setInterval(function(){retrv('rssi');}, 4000);";
+  script += "</script>";
 
   String style = "<head><style>";
   style += "body, a {font-size:55px;}";
-  style += "table {display:inline;}"; // No line breaks befor & after tables
+  style += "table {display:inline;}"; // No line breaks before & after tables
   style += "button {font-size:55px; line-height:155px}"; // Big buttons
   style += ".panel {line-height:200px; text-align:center; border:10px outset lightblue; border-radius:40px;}"; // Lot of space between buttons
   style += "</style></head>";
@@ -223,20 +246,39 @@ void ui_webserver_display() {
   body += "   <tr><td><a onclick=\"send('%2D');return false;\">A-</a></td></tr></table> <br/>";
   body += "<button onclick=\"send('A');\">LEFT</button> <button onclick=\"send('S');\">FWD</button> <button onclick=\"send('D');\">RIGHT</button> <br/>";
   body += "<button onclick=\"send('Z');\">SLOWER</button> <button onclick=\"send('_');\">GLIDE</button> <br/>";
+  body += "<table><tr><td id='rssi'><td/> <td></td> <td id='status'></td></table> <br/>";
   body += "<br/>";
-  body += "<button onclick=\"send('C');\">CAL CHECK</button> <button onclick=\"send('H');\">HALT</button>";
+  body += "<button onclick=\"send('H');\">HALT</button> <br/>";
+  body += "<button onclick=\"send('C');\">CAL CHECK</button>";
   body += "</div></body>";
   
-  ui_webserver.send(200, "text/html", script + style + body);
+  ui_webserver.send(200, "text/html", script + style + body + EOT);
 }
 
 void ui_webserver_cmd() {
-  /** Handles command requests. Note this doesn't send anything back to update the interface. */
+  /** Handles command requests. Note this does not send any response back to update the interface. */
   if (ui_webserver.args() == 1) {
     input = ui_webserver.argName(0)[0]; // Only expect a single character
   }
+  ui_webserver.send(200, "text/plain", EOT);
 }
 
+void ui_webserver_query() {
+  /** Handles query requests, sends plain text back for browser script to update the interface (no page reload). */
+  if (ui_webserver.args() == 1) {
+    String query = ui_webserver.argName(0);
+    // Code to respond to query
+    if (query == "rssi") {
+      String ss = String(WiFi.RSSI()) + "dBm";
+      ui_webserver.send(200, "text/plain", ss+EOT);
+    }
+    else if (query == "status") {
+      String status = "+/-" + String(wing_ampl) + "%";
+      status += " @ " + String(wing_time) + "ms";
+      ui_webserver.send(200, "text/plain", status+EOT);
+    }
+  }
+}
 
 /** Processor layer **********************************************************/
 
@@ -262,7 +304,7 @@ void loop() {
     Serial.print("State changed from "); Serial.print(current_state); Serial.print(" to "); Serial.println(next_state);
   }
   else if (input > 0) {
-    Serial.print("  wing_ampl="); Serial.print(wing_ampl); Serial.print(", wing_rest="); Serial.println(wing_rest);
+    Serial.print("  wing_ampl="); Serial.print(wing_ampl); Serial.print(", wing_time="); Serial.println(wing_time);
   }
   current_state = next_state;
 }
